@@ -98,21 +98,44 @@ async function initDb() {
   }
 
   let inserted = 0;
+  let updated = 0;
 
   for (const s of SCHEMES) {
-    const result = await run(
-      `INSERT OR IGNORE INTO schemes (
+    const existing = await get(
+      "SELECT id FROM schemes WHERE id = ?",
+      [s.id]
+    );
+
+    await run(
+      `INSERT INTO schemes (
         id, name, dept, category, tagline, baseMatch, benefit,
         deadline, eligibility, documents, steps, state,
         income_limit, age_limit, official_link, last_updated, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        dept = excluded.dept,
+        category = excluded.category,
+        tagline = excluded.tagline,
+        baseMatch = excluded.baseMatch,
+        benefit = excluded.benefit,
+        deadline = excluded.deadline,
+        eligibility = excluded.eligibility,
+        documents = excluded.documents,
+        steps = excluded.steps,
+        state = excluded.state,
+        income_limit = excluded.income_limit,
+        age_limit = excluded.age_limit,
+        official_link = excluded.official_link,
+        last_updated = excluded.last_updated,
+        status = excluded.status`,
       [
         s.id,
         s.name,
         s.dept,
         s.category,
         s.tagline,
-        s.baseMatch,
+        s.baseMatch ?? 0,
         s.benefit,
         s.deadline,
         JSON.stringify(s.eligibility || []),
@@ -127,19 +150,33 @@ async function initDb() {
       ]
     );
 
-    inserted += result.changes;
+    if (existing) {
+      updated++;
+    } else {
+      inserted++;
+    }
   }
 
-  const countRow = await get("SELECT COUNT(*) AS count FROM schemes");
+  const countRow = await get(
+    "SELECT COUNT(*) AS count FROM schemes"
+  );
+
   const educationSchemes = await all(
     "SELECT id, name, category, status FROM schemes WHERE category = ?",
     ["education"]
   );
 
+  const agricultureSchemes = await all(
+    "SELECT id, name, category, status FROM schemes WHERE category = ?",
+    ["agriculture"]
+  );
+
   console.log("YojanaSetu database initialized.");
   console.log(`New schemes inserted: ${inserted}`);
+  console.log(`Existing schemes updated: ${updated}`);
   console.log(`Total schemes in database: ${countRow.count}`);
   console.log("Education schemes:", JSON.stringify(educationSchemes));
+  console.log("Agriculture schemes:", JSON.stringify(agricultureSchemes));
 }
 
 module.exports = {
