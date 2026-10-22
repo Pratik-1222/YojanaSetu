@@ -1,11 +1,11 @@
+
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
-const fs = require("fs");
+const { SCHEMES } = require("./data/schemes");
 
 const DB_PATH = path.join(__dirname, "yojanasetu.sqlite");
 const db = new sqlite3.Database(DB_PATH);
 
-// Helper helper function to run queries with promises
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function (err) {
@@ -33,10 +33,7 @@ function all(sql, params = []) {
   });
 }
 
-// Initialise and seed database structure
-// Initialise and seed database structure
 async function initDb() {
-  // 1. Create tables
   await run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,9 +55,9 @@ async function initDb() {
       baseMatch INTEGER NOT NULL,
       benefit TEXT NOT NULL,
       deadline TEXT NOT NULL,
-      eligibility TEXT NOT NULL, -- JSON array of strings
-      documents TEXT NOT NULL, -- JSON array of strings
-      steps TEXT NOT NULL, -- JSON array of strings
+      eligibility TEXT NOT NULL,
+      documents TEXT NOT NULL,
+      steps TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'Central',
       income_limit INTEGER DEFAULT 0,
       age_limit INTEGER DEFAULT 0,
@@ -80,61 +77,69 @@ async function initDb() {
     )
   `);
 
-  // Run migrations in case database already exists
-  try {
-    await run("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN state TEXT NOT NULL DEFAULT 'Central'");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN income_limit INTEGER DEFAULT 0");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN age_limit INTEGER DEFAULT 0");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN official_link TEXT");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN last_updated TEXT");
-  } catch (e) {}
-  try {
-    await run("ALTER TABLE schemes ADD COLUMN status TEXT DEFAULT 'active'");
-  } catch (e) {}
+  const migrations = [
+    "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'",
+    "ALTER TABLE schemes ADD COLUMN state TEXT NOT NULL DEFAULT 'Central'",
+    "ALTER TABLE schemes ADD COLUMN income_limit INTEGER DEFAULT 0",
+    "ALTER TABLE schemes ADD COLUMN age_limit INTEGER DEFAULT 0",
+    "ALTER TABLE schemes ADD COLUMN official_link TEXT",
+    "ALTER TABLE schemes ADD COLUMN last_updated TEXT",
+    "ALTER TABLE schemes ADD COLUMN status TEXT DEFAULT 'active'"
+  ];
 
-  // 2. Check if schemes table is empty, and seed if so
-  const countRow = await get("SELECT COUNT(*) as count FROM schemes");
-  if (countRow.count === 0) {
-    console.log("Seeding schemes table into SQLite database...");
-    const { SCHEMES } = require("./data/schemes");
-    for (const s of SCHEMES) {
-      await run(
-        `INSERT OR REPLACE INTO schemes (id, name, dept, category, tagline, baseMatch, benefit, deadline, eligibility, documents, steps, state, income_limit, age_limit, official_link, last_updated, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          s.id,
-          s.name,
-          s.dept,
-          s.category,
-          s.tagline,
-          s.baseMatch,
-          s.benefit,
-          s.deadline,
-          JSON.stringify(s.eligibility),
-          JSON.stringify(s.documents),
-          JSON.stringify(s.steps),
-          s.state || "Central",
-          s.income_limit || 0,
-          s.age_limit || 0,
-          s.official_link || "",
-          s.last_updated || "",
-          s.status || "active"
-        ]
-      );
+  for (const sql of migrations) {
+    try {
+      await run(sql);
+    } catch (error) {
+      if (!error.message.includes("duplicate column name")) {
+        throw error;
+      }
     }
-    console.log("Seeding completed successfully.");
   }
+
+  let inserted = 0;
+
+  for (const s of SCHEMES) {
+    const result = await run(
+      `INSERT OR IGNORE INTO schemes (
+        id, name, dept, category, tagline, baseMatch, benefit,
+        deadline, eligibility, documents, steps, state,
+        income_limit, age_limit, official_link, last_updated, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        s.id,
+        s.name,
+        s.dept,
+        s.category,
+        s.tagline,
+        s.baseMatch,
+        s.benefit,
+        s.deadline,
+        JSON.stringify(s.eligibility || []),
+        JSON.stringify(s.documents || []),
+        JSON.stringify(s.steps || []),
+        s.state || "Central",
+        s.income_limit ?? 0,
+        s.age_limit ?? 0,
+        s.official_link || "",
+        s.last_updated || "",
+        s.status || "active"
+      ]
+    );
+
+    inserted += result.changes;
+  }
+
+  const countRow = await get("SELECT COUNT(*) AS count FROM schemes");
+  const educationSchemes = await all(
+    "SELECT id, name, category, status FROM schemes WHERE category = ?",
+    ["education"]
+  );
+
+  console.log("YojanaSetu database initialized.");
+  console.log(`New schemes inserted: ${inserted}`);
+  console.log(`Total schemes in database: ${countRow.count}`);
+  console.log("Education schemes:", JSON.stringify(educationSchemes));
 }
 
 module.exports = {
