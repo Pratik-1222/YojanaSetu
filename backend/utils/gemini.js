@@ -346,14 +346,21 @@ Structure the response around the question, relevant scheme details, eligibility
 
     console.error("Gemini returned an empty response.");
     return fallbackResponse(message, userProfile, schemes);
-  } catch (error) {
-    console.error("Gemini API request failed:", {
-      message: error.message,
-      status: error.status || error.statusCode || null
-    });
 
-    return fallbackResponse(message, userProfile, schemes);
+} catch (error) {
+  const status = error.status || error.statusCode || null;
+
+  console.error("Gemini API request failed:", {
+    message: error.message,
+    status
+  });
+
+  if (status === 503 || status === 429 || status === 500) {
+    console.warn("Gemini is temporarily unavailable. Using local scheme matching.");
   }
+
+  return fallbackResponse(message, userProfile, schemes);
+}
 }
 
 module.exports = {
