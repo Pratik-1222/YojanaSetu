@@ -1,8 +1,8 @@
-
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const MODEL_NAME = "gemini-3.8-flash";
 const MAX_MATCHES = 4;
+const GEMINI_TIMEOUT_MS = 8000;
 
 const CATEGORY_KEYWORDS = {
   education: [
@@ -124,6 +124,7 @@ function scoreScheme(message, scheme) {
 
   const name = normalize(scheme.name);
   const category = getSchemeCategory(scheme);
+
   const searchableText = normalize([
     scheme.name,
     scheme.category,
@@ -138,11 +139,14 @@ function scoreScheme(message, scheme) {
 
   if (name && query.includes(name)) score += 15;
 
-  if (query.includes(category) && category) score += 5;
+  if (category && query.includes(category)) score += 5;
 
   for (const token of queryTokens) {
-    if (name.includes(token)) score += 5;
-    else if (searchableText.includes(token)) score += 1;
+    if (name.includes(token)) {
+      score += 5;
+    } else if (searchableText.includes(token)) {
+      score += 1;
+    }
   }
 
   const requestedCategories = getRequestedCategories(message);
@@ -206,7 +210,11 @@ function getSchemeDetails(scheme) {
 
 function findRelevantSchemes(message, schemes = []) {
   const validSchemes = schemes.filter(scheme => {
-    return scheme && scheme.name && scheme.status !== "inactive";
+    if (!scheme || !scheme.name) return false;
+
+    const status = normalize(scheme.status);
+
+    return status === "active" || status === "verified";
   });
 
   const scored = validSchemes
@@ -218,13 +226,62 @@ function findRelevantSchemes(message, schemes = []) {
     .sort((a, b) => b.score - a.score);
 
   const requestedCategories = getRequestedCategories(message);
+  const normalizedQuery = normalize(message);
+
+  const asksForEquipment = [
+    "equipment",
+    "machinery",
+    "tractor",
+    "farm machine",
+    "agricultural tools"
+  ].some(term => normalizedQuery.includes(term));
 
   const relevant = scored.filter(item => {
-    if (requestedCategories.length === 0) return true;
-    return requestedCategories.includes(getSchemeCategory(item.scheme));
+    const category = getSchemeCategory(item.scheme);
+
+    if (
+      requestedCategories.length > 0 &&
+      !requestedCategories.includes(category)
+    ) {
+      return false;
+    }
+
+    if (asksForEquipment) {
+      const schemeText = normalize([
+        item.scheme.name,
+        item.scheme.tagline,
+        item.scheme.benefit,
+        item.scheme.eligibility,
+        item.scheme.description
+      ].join(" "));
+
+      const supportsEquipment = [
+        "equipment",
+        "machinery",
+        "tractor",
+        "farm machine",
+        "agricultural tools"
+      ].some(term => schemeText.includes(term));
+
+      if (!supportsEquipment) return false;
+    }
+
+    return true;
   });
 
-  return relevant.slice(0, MAX_MATCHES).map(item => item.scheme);
+  const seen = new Set();
+
+  return relevant
+    .filter(item => {
+      const id = item.scheme.id;
+
+      if (!id || seen.has(id)) return false;
+
+      seen.add(id);
+      return true;
+    })
+    .slice(0, MAX_MATCHES)
+    .map(item => item.scheme);
 }
 
 function fallbackResponse(message, profile, schemes) {
@@ -253,8 +310,12 @@ function fallbackResponse(message, profile, schemes) {
     response.push(
       "",
       `### ${details.name}`,
-      details.benefit ? `**Benefit:** ${details.benefit}` : "",
-      details.category ? `**Category:** ${details.category}` : "",
+      details.benefit
+        ? `**Benefit:** ${details.benefit}`
+        : "",
+      details.category
+        ? `**Category:** ${details.category}`
+        : "",
       details.eligibility.length
         ? `**Eligibility:**\n${details.eligibility.map(item => `- ${toText(item)}`).join("\n")}`
         : "",
@@ -264,9 +325,15 @@ function fallbackResponse(message, profile, schemes) {
       details.steps.length
         ? `**How to apply:**\n${details.steps.map((item, index) => `${index + 1}. ${toText(item)}`).join("\n")}`
         : "",
-      details.deadline ? `**Deadline / timeline listed in database:** ${details.deadline}` : "",
-      details.officialLink ? `**Official website:** ${details.officialLink}` : "",
-      details.lastUpdated ? `**Database last updated:** ${details.lastUpdated}` : ""
+      details.deadline
+        ? `**Deadline / timeline listed in database:** ${details.deadline}`
+        : "",
+      details.officialLink
+        ? `**Official website:** ${details.officialLink}`
+        : "",
+      details.lastUpdated
+        ? `**Database last updated:** ${details.lastUpdated}`
+        : ""
     );
   }
 
@@ -278,7 +345,11 @@ function fallbackResponse(message, profile, schemes) {
   return response.filter(Boolean).join("\n");
 }
 
-async function queryAssistant(userMessage, userProfile = {}, allSchemes = []) {
+async function queryAssistant(
+  userMessage,
+  userProfile = {},
+  allSchemes = []
+) {
   const message = toText(userMessage).trim();
 
   if (!message) {
@@ -329,6 +400,7 @@ Structure the response around the question, relevant scheme details, eligibility
 
   try {
     const ai = new GoogleGenerativeAI(apiKey);
+
     const model = ai.getGenerativeModel({
       model: MODEL_NAME,
       generationConfig: {
@@ -337,30 +409,54 @@ Structure the response around the question, relevant scheme details, eligibility
       }
     });
 
-    const result = await model.generateContent(prompt);
-    const answer = result.response.text();
+    let timeoutId;
 
-    if (answer && answer.trim()) {
-      return answer.trim();
+    try {
+      const result = await Promise.race([
+        model.generateContent(prompt),
+        new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            const error = new Error(
+              `Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms`
+            );
+
+            error.code = "GEMINI_TIMEOUT";
+            reject(error);
+          }, GEMINI_TIMEOUT_MS);
+        })
+      ]);
+
+      const answer = result.response.text();
+
+      if (answer && answer.trim()) {
+        return answer.trim();
+      }
+
+      console.error("Gemini returned an empty response.");
+
+      return fallbackResponse(message, userProfile, schemes);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  } catch (error) {
+    const status = error.status || error.statusCode || null;
+
+    console.error("Gemini API request failed:", {
+      message: error.message,
+      status,
+      code: error.code || null
+    });
+
+    if (error.code === "GEMINI_TIMEOUT") {
+      console.warn("Gemini timed out. Returning local scheme matching.");
+    } else if (status === 503 || status === 429 || status === 500) {
+      console.warn(
+        "Gemini is temporarily unavailable. Returning local scheme matching."
+      );
     }
 
-    console.error("Gemini returned an empty response.");
     return fallbackResponse(message, userProfile, schemes);
-
-} catch (error) {
-  const status = error.status || error.statusCode || null;
-
-  console.error("Gemini API request failed:", {
-    message: error.message,
-    status
-  });
-
-  if (status === 503 || status === 429 || status === 500) {
-    console.warn("Gemini is temporarily unavailable. Using local scheme matching.");
   }
-
-  return fallbackResponse(message, userProfile, schemes);
-}
 }
 
 module.exports = {
