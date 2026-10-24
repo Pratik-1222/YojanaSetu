@@ -1,3 +1,4 @@
+
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 async function handle(res) {
@@ -9,7 +10,10 @@ async function handle(res) {
 }
 
 export function getSchemes(category = "all") {
-  const q = category && category !== "all" ? `?category=${encodeURIComponent(category)}` : "";
+  const q = category && category !== "all"
+    ? `?category=${encodeURIComponent(category)}`
+    : "";
+
   return fetch(`${API_BASE}/api/schemes${q}`).then(handle);
 }
 
@@ -29,12 +33,11 @@ export function matchSchemes(profile) {
   }).then(handle);
 }
 
-// User Authentication API methods
 export function loginUser(email, password) {
   return fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password }),
   }).then(handle);
 }
 
@@ -42,13 +45,13 @@ export function registerUser(email, password, name) {
   return fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, name })
+    body: JSON.stringify({ email, password, name }),
   }).then(handle);
 }
 
 export function getAuthProfile(token) {
   return fetch(`${API_BASE}/api/auth/profile`, {
-    headers: { "Authorization": `Bearer ${token}` }
+    headers: { Authorization: `Bearer ${token}` },
   }).then(handle);
 }
 
@@ -57,15 +60,15 @@ export function updateAuthProfile(token, profile) {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ profile })
+    body: JSON.stringify({ profile }),
   }).then(handle);
 }
 
 export function getAuthSaved(token) {
   return fetch(`${API_BASE}/api/auth/saved`, {
-    headers: { "Authorization": `Bearer ${token}` }
+    headers: { Authorization: `Bearer ${token}` },
   }).then(handle);
 }
 
@@ -74,30 +77,35 @@ export function toggleAuthSaved(token, schemeId) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ schemeId })
+    body: JSON.stringify({ schemeId }),
   }).then(handle);
 }
 
-// AI Assistant Chat RAG API method
-export function askAIAssistant(message, profile) {
+export function askAIAssistant(message, profile, history = []) {
   return fetch(`${API_BASE}/api/schemes/assistant`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, profile })
+    body: JSON.stringify({
+      message,
+      profile,
+      history: history.slice(-12).map((item) => ({
+        role: item.role,
+        text: item.text,
+      })),
+    }),
   }).then(handle);
 }
 
-// Admin CMS Control API methods
 export function verifyScheme(token, id, status) {
   return fetch(`${API_BASE}/api/schemes/${id}/verify`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ status })
+    body: JSON.stringify({ status }),
   }).then(handle);
 }
 
@@ -106,16 +114,14 @@ export function createScheme(token, schemeData) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(schemeData)
+    body: JSON.stringify(schemeData),
   }).then(handle);
 }
 
 export function triggerCrawler(token) {
   return fetch(`${API_BASE}/api/schemes/crawler/trigger`, {
-    headers: {
-      "Authorization": `Bearer ${token}`
-    }
+    headers: { Authorization: `Bearer ${token}` },
   }).then(handle);
 }
