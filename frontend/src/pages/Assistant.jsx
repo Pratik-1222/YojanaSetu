@@ -39,10 +39,7 @@ function AIMessageContent({ text }) {
       {text.split("\n").map((line, li) => {
         if (line.startsWith("### ")) {
           return (
-            <h3
-              key={li}
-              className="text-sm font-black text-primary mt-3 mb-1 first:mt-0"
-            >
+            <h3 key={li} className="text-sm font-black text-primary mt-3 mb-1 first:mt-0">
               {line.replace("### ", "")}
             </h3>
           );
@@ -50,10 +47,7 @@ function AIMessageContent({ text }) {
 
         if (line.startsWith("## ")) {
           return (
-            <h2
-              key={li}
-              className="text-[15px] font-black text-ink mt-3 mb-1"
-            >
+            <h2 key={li} className="text-[15px] font-black text-ink mt-3 mb-1">
               {line.replace("## ", "")}
             </h2>
           );
@@ -64,18 +58,12 @@ function AIMessageContent({ text }) {
           const parts = content.split(/\*\*(.*?)\*\*/g);
 
           return (
-            <p
-              key={li}
-              className="ml-2 mb-1 flex gap-1.5 items-start text-sm"
-            >
+            <p key={li} className="ml-2 mb-1 flex gap-1.5 items-start text-sm">
               <span className="text-primary shrink-0 mt-0.5">•</span>
               <span>
                 {parts.map((part, pi) =>
                   pi % 2 === 1 ? (
-                    <strong
-                      key={pi}
-                      className="font-extrabold text-ink"
-                    >
+                    <strong key={pi} className="font-extrabold text-ink">
                       {part}
                     </strong>
                   ) : (
@@ -89,10 +77,7 @@ function AIMessageContent({ text }) {
 
         if (/^\s{4}\d+\./.test(line)) {
           return (
-            <p
-              key={li}
-              className="ml-6 mb-0.5 text-xs font-medium text-sub"
-            >
+            <p key={li} className="ml-6 mb-0.5 text-xs font-medium text-sub">
               {line.trim()}
             </p>
           );
@@ -100,10 +85,7 @@ function AIMessageContent({ text }) {
 
         if (/^\s{4}-/.test(line)) {
           return (
-            <p
-              key={li}
-              className="ml-6 mb-0.5 text-xs font-medium text-sub flex gap-1.5"
-            >
+            <p key={li} className="ml-6 mb-0.5 text-xs font-medium text-sub flex gap-1.5">
               <span>–</span>
               <span>{line.replace(/^\s+-\s*/, "")}</span>
             </p>
@@ -120,10 +102,7 @@ function AIMessageContent({ text }) {
           <p key={li} className="mb-1 text-sm leading-relaxed">
             {boldParts.map((part, pi) =>
               pi % 2 === 1 ? (
-                <strong
-                  key={pi}
-                  className="font-extrabold text-ink"
-                >
+                <strong key={pi} className="font-extrabold text-ink">
                   {part}
                 </strong>
               ) : (
@@ -186,6 +165,13 @@ export default function Assistant() {
 
     if (!message || loading) return;
 
+    const history = messages
+      .filter((item) => item.text !== INITIAL_MESSAGE)
+      .map((item) => ({
+        role: item.role,
+        text: item.text
+      }));
+
     setInput("");
     setMessages((current) => [
       ...current,
@@ -194,13 +180,13 @@ export default function Assistant() {
     setLoading(true);
 
     try {
-      const res = await askAIAssistant(message, profile);
+      const res = await askAIAssistant(message, profile, history);
 
       setMessages((current) => [
         ...current,
         {
           role: "assistant",
-          text: res?.reply || "I couldn't generate a response. Please try again.",
+          text: res?.reply || "I couldn't generate a response. Please try again."
         }
       ]);
     } catch {
@@ -404,7 +390,7 @@ export default function Assistant() {
                 !event.shiftKey &&
                 send(input)
               }
-              placeholder="e.g., I am a 25yo female entrepreneur from Maharashtra seeking business loans..."
+              placeholder="Ask about government schemes, scholarships, or benefits..."
               className="w-full bg-transparent px-2 text-sm text-ink outline-none placeholder:text-slate-400 font-medium"
               disabled={loading}
               aria-label="Ask YojanaSetu AI Assistant"
