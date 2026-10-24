@@ -1,14 +1,17 @@
+
 const express = require("express");
-const { all, get } = require("../db");
+const { all, get, run } = require("../db");
 const { CATEGORIES } = require("../data/schemes");
+const { queryAssistant } = require("../utils/gemini");
 
 const router = express.Router();
 
-// GET /api/schemes - list all schemes (optionally filter by category)
 router.get("/", async (req, res) => {
   const { category, includePending } = req.query;
+
   try {
     let rows;
+
     if (category && category !== "all") {
       rows = includePending === "true"
         ? await all("SELECT * FROM schemes WHERE category = ?", [category])
@@ -26,22 +29,24 @@ router.get("/", async (req, res) => {
       documents: JSON.parse(r.documents || "[]"),
       steps: JSON.parse(r.steps || "[]")
     }));
+
     res.json(parsed);
   } catch (err) {
     res.status(500).json({ error: "Database error retrieving schemes." });
   }
 });
 
-// GET /api/schemes/categories - category metadata
 router.get("/categories", (req, res) => {
   res.json(CATEGORIES);
 });
 
-// GET /api/schemes/:id - single scheme detail
 router.get("/:id", async (req, res) => {
   try {
     const r = await get("SELECT * FROM schemes WHERE id = ?", [req.params.id]);
-    if (!r) return res.status(404).json({ error: "Scheme not found" });
+
+    if (!r) {
+      return res.status(404).json({ error: "Scheme not found" });
+    }
 
     res.json({
       ...r,
@@ -55,7 +60,6 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// Rule-based matching scorer
 function computeMatch(profile, scheme) {
   let score = scheme.baseMatch;
 
@@ -66,30 +70,43 @@ function computeMatch(profile, scheme) {
   const category = (profile.category || "").toLowerCase();
   const disability = (profile.disability || "").toLowerCase();
 
-  const lowIncome = income.includes("Below") || income.includes("1,00,000") || income.includes("2,50,000");
+  const lowIncome = income.includes("Below") ||
+    income.includes("1,00,000") ||
+    income.includes("2,50,000");
 
-  if (scheme.category === "education" && (occupation.includes("student") || education.includes("undergraduate") || education.includes("postgraduate"))) score += 6;
+  if (
+    scheme.category === "education" &&
+    (occupation.includes("student") ||
+      education.includes("undergraduate") ||
+      education.includes("postgraduate"))
+  ) score += 6;
+
   if (scheme.category === "education" && lowIncome) score += 3;
-
   if (scheme.category === "agriculture" && occupation.includes("farmer")) score += 8;
 
-  if (scheme.category === "business" && (occupation.includes("self-employed") || occupation.includes("business"))) score += 6;
-  if (scheme.id === "stand-up-india" && (gender === "female" || category === "sc" || category === "st")) score += 10;
+  if (
+    scheme.category === "business" &&
+    (occupation.includes("self-employed") || occupation.includes("business"))
+  ) score += 6;
+
+  if (
+    scheme.id === "stand-up-india" &&
+    (gender === "female" || category === "sc" || category === "st")
+  ) score += 10;
 
   if (scheme.category === "women" && gender === "female") score += 8;
-
   if (scheme.category === "health" && lowIncome) score += 5;
-  
   if (scheme.category === "disability" && disability === "yes") score += 20;
 
   return Math.max(20, Math.min(99, Math.round(score)));
 }
 
-// POST /api/schemes/match - personalised ranking based on onboarding profile
 router.post("/match", express.json(), async (req, res) => {
   const profile = req.body || {};
+
   try {
     const rows = await all("SELECT * FROM schemes WHERE status = 'active'");
+
     const parsed = rows.map((r) => ({
       ...r,
       eligibility: JSON.parse(r.eligibility || "[]"),
@@ -98,7 +115,10 @@ router.post("/match", express.json(), async (req, res) => {
     }));
 
     const ranked = parsed
-      .map((s) => ({ ...s, match: computeMatch(profile, s) }))
+      .map((scheme) => ({
+        ...scheme,
+        match: computeMatch(profile, scheme)
+      }))
       .sort((a, b) => b.match - a.match);
 
     res.json(ranked);
@@ -107,13 +127,16 @@ router.post("/match", express.json(), async (req, res) => {
   }
 });
 
-// POST /api/schemes/assistant - RAG query
 router.post("/assistant", express.json(), async (req, res) => {
-  const { message, profile } = req.body;
-  const { queryAssistant } = require("../utils/gemini");
-  
+  const { message, profile = {}, history = [] } = req.body || {};
+
+  if (typeof message !== "string" || !message.trim()) {
+    return res.status(400).json({ error: "Please provide a message." });
+  }
+
   try {
     const rows = await all("SELECT * FROM schemes");
+
     const parsedSchemes = rows.map((r) => ({
       ...r,
       eligibility: JSON.parse(r.eligibility || "[]"),
@@ -121,42 +144,69 @@ router.post("/assistant", express.json(), async (req, res) => {
       steps: JSON.parse(r.steps || "[]")
     }));
 
-    const reply = await queryAssistant(message, profile, parsedSchemes);
-    
-    // Filter matching scheme details referenced in reply
-    const matched = parsedSchemes.filter((s) => {
-      return reply.includes(s.name) || reply.toLowerCase().includes(s.id.toLowerCase());
-    });
+    const safeHistory = Array.isArray(history)
+      ? history
+          .filter((item) =>
+            item &&
+            ["user", "assistant"].includes(item.role) &&
+            typeof item.text === "string"
+          )
+          .slice(-12)
+          .map((item) => ({
+            role: item.role,
+            text: item.text.slice(0, 4000)
+          }))
+      : [];
+
+    const reply = await queryAssistant(
+      message.trim(),
+      profile,
+      parsedSchemes,
+      safeHistory
+    );
+
+    const matched = parsedSchemes.filter((scheme) =>
+      reply.includes(scheme.name) ||
+      reply.toLowerCase().includes(String(scheme.id).toLowerCase())
+    );
 
     res.json({ reply, schemes: matched });
   } catch (err) {
+    console.error("Assistant route error:", err);
     res.status(500).json({ error: "Failed to generate AI assistant reply." });
   }
 });
 
-// PUT /api/schemes/:id/verify - Approve a pending scheme
 router.put("/:id/verify", express.json(), async (req, res) => {
   try {
     const { status } = req.body;
+
     await run(
       "UPDATE schemes SET status = ?, last_updated = ? WHERE id = ?",
-      [status || "active", new Date().toISOString().split("T")[0], req.params.id]
+      [
+        status || "active",
+        new Date().toISOString().split("T")[0],
+        req.params.id
+      ]
     );
+
     res.json({ status: "ok" });
   } catch (err) {
     res.status(500).json({ error: "Failed to verify scheme." });
   }
 });
 
-// POST /api/schemes - Create a new scheme manually (Admin CMS)
 router.post("/", express.json(), async (req, res) => {
   const s = req.body || {};
+
   if (!s.id || !s.name || !s.dept || !s.category || !s.benefit || !s.deadline) {
     return res.status(400).json({ error: "Missing required scheme properties." });
   }
+
   try {
     await run(
-      `INSERT OR REPLACE INTO schemes (id, name, dept, category, tagline, baseMatch, benefit, deadline, eligibility, documents, steps, state, official_link, last_updated, status)
+      `INSERT OR REPLACE INTO schemes
+       (id, name, dept, category, tagline, baseMatch, benefit, deadline, eligibility, documents, steps, state, official_link, last_updated, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         s.id,
@@ -176,6 +226,7 @@ router.post("/", express.json(), async (req, res) => {
         s.status || "active"
       ]
     );
+
     res.status(201).json({ status: "ok", scheme: s });
   } catch (err) {
     res.status(500).json({ error: "Failed to create scheme." });
