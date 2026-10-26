@@ -2,7 +2,7 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const MODEL_NAME = "gemini-3.8-flash";
-const MAX_MATCHES = 4;
+const MAX_MATCHES = 5;
 const GEMINI_TIMEOUT_MS = 15000;
 
 const CATEGORY_KEYWORDS = {
@@ -40,9 +40,9 @@ function parseList(value) {
   if (typeof value === "string") {
     try {
       const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [];
+      return Array.isArray(parsed) ? parsed : [value];
     } catch {
-      return [value.trim()].filter(Boolean);
+      return value.split(/\n|,/).map(item => item.trim()).filter(Boolean);
     }
   }
 
@@ -79,11 +79,41 @@ function asksAboutScholarships(message) {
   ].some(term => query.includes(term));
 }
 
+function isRecommendationRequest(message) {
+  const query = normalize(message);
+
+  return [
+    "which scholarships",
+    "which scholarship",
+    "can i apply",
+    "can i get",
+    "am i eligible",
+    "based on my details",
+    "based on all the details",
+    "based on my information",
+    "based on all the information",
+    "recommend scholarships",
+    "recommend a scholarship",
+    "suggest scholarships",
+    "find scholarships",
+    "eligible scholarships",
+    "suitable scholarships",
+    "scholarships for me",
+    "according to my details",
+    "according to my profile",
+    "what can i apply for"
+  ].some(phrase => query.includes(phrase));
+}
+
 function isUsableScheme(scheme) {
   if (!scheme || !scheme.name) return false;
 
   const status = normalize(scheme.status);
-  return !status || status === "active" || status === "verified";
+  return !status || ["active", "verified"].includes(status);
+}
+
+function getSchemeCategory(scheme) {
+  return normalize(scheme.category);
 }
 
 function getSchemeDetails(scheme) {
@@ -100,8 +130,8 @@ function getSchemeDetails(scheme) {
     deadline: scheme.deadline || "",
     officialLink: scheme.official_link || "",
     state: scheme.state || "",
-    incomeLimit: scheme.income_limit,
-    ageLimit: scheme.age_limit,
+    incomeLimit: scheme.income_limit ?? "",
+    ageLimit: scheme.age_limit ?? "",
     lastUpdated: scheme.last_updated || ""
   };
 }
@@ -117,8 +147,7 @@ function scoreScheme(message, scheme) {
     scheme.tagline,
     scheme.benefit,
     scheme.eligibility,
-    scheme.description,
-    scheme.documents
+    scheme.description
   ].join(" "));
 
   let score = 0;
@@ -126,7 +155,7 @@ function scoreScheme(message, scheme) {
   if (name && query.includes(name)) score += 15;
 
   const requestedCategories = getRequestedCategories(message);
-  const category = normalize(scheme.category);
+  const category = getSchemeCategory(scheme);
 
   if (requestedCategories.includes(category)) score += 8;
   else if (requestedCategories.length > 0) score -= 8;
@@ -152,32 +181,17 @@ function findRelevantSchemes(message, schemes = [], forcedCategories = []) {
     ? forcedCategories
     : getRequestedCategories(message);
 
-  const query = normalize(message);
-
   return schemes
     .filter(isUsableScheme)
-    .filter(scheme => {
-      const name = normalize(scheme.name);
-      const isDirectory =
-        name.includes("scholarship directory") ||
-        name.includes("scholarship portal directory");
-
-      const asksForDirectory =
-        query.includes("scholarship directory") ||
-        query.includes("scholarship portal") ||
-        query.includes("all scholarships");
-
-      return !isDirectory || asksForDirectory;
-    })
+    .filter(scheme =>
+      categories.length === 0 ||
+      categories.includes(getSchemeCategory(scheme))
+    )
     .map(scheme => ({
       scheme,
       score: scoreScheme(message, scheme)
     }))
     .filter(item => item.score >= 3)
-    .filter(item =>
-      categories.length === 0 ||
-      categories.includes(normalize(item.scheme.category))
-    )
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_MATCHES)
     .map(item => item.scheme);
@@ -192,22 +206,34 @@ function getConversationContext(history = [], message = "") {
   const currentCategories = getRequestedCategories(message);
 
   if (asksAboutScholarships(message)) {
-    return { scholarship: true, categories: ["education"] };
+    return {
+      scholarship: true,
+      categories: ["education"]
+    };
   }
 
   if (currentCategories.length > 0) {
-    return { scholarship: false, categories: currentCategories };
+    return {
+      scholarship: false,
+      categories: currentCategories
+    };
   }
 
   for (let i = userMessages.length - 2; i >= 0; i--) {
     if (asksAboutScholarships(userMessages[i])) {
-      return { scholarship: true, categories: ["education"] };
+      return {
+        scholarship: true,
+        categories: ["education"]
+      };
     }
 
     const categories = getRequestedCategories(userMessages[i]);
 
     if (categories.length > 0) {
-      return { scholarship: false, categories };
+      return {
+        scholarship: false,
+        categories
+      };
     }
   }
 
@@ -234,22 +260,22 @@ function extractScholarshipDetails(history = []) {
     /\b(1st|2nd|3rd|4th|first|second|third|fourth|final)\s+year\b/
   );
 
+  let marksMatch = null;
+
   const marksPatterns = [
     /\b(?:class\s*12|12th|in\s*12|class\s*xii|12th\s*standard)[\s\S]{0,50}?\b(\d{1,3}(?:\.\d+)?)\s*%?/,
     /\b(\d{1,3}(?:\.\d+)?)\s*%\s*(?:in\s*)?(?:class\s*12|12th|boards|board exams)?\b/,
-    /\b(?:marks|percentage|scored|got|score)\s*(?:of|is|was|are)?\s*(\d{1,3}(?:\.\d+)?)\s*%/
+    /\b(?:marks|percentage|percent|scored|got|score)\s*(?:of|is|was|are)?\s*(\d{1,3}(?:\.\d+)?)\s*%/
   ];
 
-  let marksMatch = null;
-
   for (const pattern of marksPatterns) {
-    const found = conversation.match(pattern);
+    const match = conversation.match(pattern);
 
-    if (found) {
-      const value = Number(found[1]);
+    if (match) {
+      const value = Number(match[1]);
 
       if (value >= 0 && value <= 100) {
-        marksMatch = found;
+        marksMatch = match;
         break;
       }
     }
@@ -258,12 +284,12 @@ function extractScholarshipDetails(history = []) {
   const marksMentioned = Boolean(marksMatch) ||
     /\b(marks|percentage|percent|cgpa|grade|academic score|aggregate)\b/.test(conversation);
 
+  let incomeMatch = null;
+
   const incomePatterns = [
     /\b(?:family income|annual income|income)\s*(?:is|of|around|about)?\s*(?:rupees\s*)?(\d+(?:\.\d+)?)\s*(lakh|lakhs|lac|lacs)\b/,
     /\b(?:rupees\s*)?(\d+(?:\.\d+)?)\s*(lakh|lakhs|lac|lacs)\s*(?:per year|per annum|annually|annual)?\b/
   ];
-
-  let incomeMatch = null;
 
   for (const pattern of incomePatterns) {
     incomeMatch = conversation.match(pattern);
@@ -298,32 +324,23 @@ function extractScholarshipDetails(history = []) {
 function getMissingScholarshipDetails(details) {
   const missing = [];
 
-  if (!details.course || !details.year) {
-    missing.push("your current course and year of study");
-  }
-
-  if (!details.marksMentioned) {
-    missing.push("your Class 12 or current academic marks");
-  }
-
-  if (!details.incomeMentioned) {
-    missing.push("your approximate annual family income");
-  }
-
-  if (!details.applicationType) {
-    missing.push("whether this is a fresh application or renewal");
-  }
+  if (!details.course) missing.push("your course");
+  if (!details.year) missing.push("your current year of study");
+  if (!details.marksMentioned) missing.push("your Class 12 or current academic marks");
+  if (!details.incomeMentioned) missing.push("your approximate annual family income");
+  if (!details.applicationType) missing.push("whether this is a fresh application or renewal");
 
   return missing;
 }
 
 function isLikelyScholarshipFollowUp(message, history = []) {
-  const previousUserMessages = history
+  const previousMessages = history
     .filter(item => item.role === "user")
     .map(item => item.text);
 
-  if (!previousUserMessages.some(asksAboutScholarships)) return false;
+  if (!previousMessages.some(asksAboutScholarships)) return false;
   if (asksAboutScholarships(message)) return false;
+  if (isRecommendationRequest(message)) return false;
 
   const categories = getRequestedCategories(message);
 
@@ -356,15 +373,82 @@ function buildScholarshipFollowUp(history = []) {
   }
 
   return [
-    "Thanks! Here's the information you've shared:",
+    "Thanks! I've noted your details:",
     `- Course: ${details.course}`,
     `- Study year: ${details.year}`,
     `- Class 12 marks: ${details.marks}`,
     `- Annual family income: ${details.income}`,
     `- Application type: ${details.applicationType}`,
     "",
-    "I'll use these details to narrow down education schemes in the database. Final eligibility depends on the official scheme criteria, including any merit, institution, and application requirements."
+    "You can now ask me to find matching scholarships using these details."
   ].join("\n");
+}
+
+function evaluateScheme(scheme, details) {
+  const eligibility = parseList(scheme.eligibility);
+  const eligibilityText = normalize(eligibility.join(" "));
+  const schemeText = normalize([
+    scheme.name,
+    scheme.tagline,
+    scheme.description,
+    scheme.benefit,
+    eligibilityText
+  ].join(" "));
+
+  const checks = [];
+
+  if (details.course) {
+    checks.push({
+      label: "Course",
+      status: /\b(btech|b\s*tech|engineering|undergraduate|college|university|degree)\b/.test(schemeText)
+        ? "Course-related information appears in the scheme record; verify the exact requirement."
+        : "Not specified clearly in the database."
+    });
+  }
+
+  if (details.year) {
+    checks.push({
+      label: "Study year",
+      status: /\b(first year|second year|third year|fourth year|fresh application|renewal)\b/.test(eligibilityText)
+        ? "The record mentions study-stage or application conditions; verify the exact rule."
+        : "The required study year is not specified clearly in the database."
+    });
+  }
+
+  if (details.marks) {
+    checks.push({
+      label: "Class 12 marks",
+      status: /\b(marks|percentage|merit|academic score|12th|class 12|qualifying examination)\b/.test(eligibilityText)
+        ? "Academic merit is mentioned; the exact qualifying threshold is not available in the database."
+        : "A qualifying marks threshold is not specified clearly in the database."
+    });
+  }
+
+  if (details.income) {
+    checks.push({
+      label: "Family income",
+      status: /\b(income|family income|annual income|economically weaker)\b/.test(eligibilityText)
+        ? "Income requirements may apply; the exact income limit is not available in the database."
+        : "The income limit is not specified clearly in the database."
+    });
+  }
+
+  if (details.applicationType) {
+    checks.push({
+      label: "Application type",
+      status: eligibilityText.includes("fresh") || eligibilityText.includes("renewal")
+        ? "Fresh or renewal conditions are mentioned; confirm that fresh applications are currently accepted."
+        : "Fresh-application availability is not established by the database record."
+    });
+  }
+
+  return {
+    checks,
+    recordHasSpecificEligibility: eligibility.some(item => {
+      const text = normalize(item);
+      return /\d+\s*%|\d+\s*(lakh|lakhs|lac|lacs)|income limit|annual income|class 12|12th marks/.test(text);
+    })
+  };
 }
 
 function formatScheme(scheme) {
@@ -375,7 +459,7 @@ function formatScheme(scheme) {
   if (details.category) lines.push(`**Category:** ${details.category}`);
 
   if (details.eligibility.length) {
-    lines.push("**Eligibility:**");
+    lines.push("**Eligibility listed in the database:**");
     details.eligibility.forEach(item => lines.push(`- ${toText(item)}`));
   }
 
@@ -391,9 +475,88 @@ function formatScheme(scheme) {
     });
   }
 
-  if (details.deadline) lines.push(`**Deadline / timeline:** ${details.deadline}`);
+  if (details.deadline) lines.push(`**Deadline:** ${details.deadline}`);
   if (details.officialLink) lines.push(`**Official website:** ${details.officialLink}`);
   if (details.lastUpdated) lines.push(`**Database last updated:** ${details.lastUpdated}`);
+
+  return lines.join("\n");
+}
+
+function buildRecommendationResponse(history, schemes) {
+  const details = extractScholarshipDetails(history);
+  const missing = getMissingScholarshipDetails(details);
+
+  const educationSchemes = schemes.filter(
+    scheme => isUsableScheme(scheme) &&
+      getSchemeCategory(scheme) === "education"
+  );
+
+  const lines = [
+    "Based on the information you've shared, here's what I can determine.",
+    "",
+    "**Your profile**",
+    `- Course: ${details.course || "Not provided"}`,
+    `- Study year: ${details.year || "Not provided"}`,
+    `- Class 12 marks: ${details.marks || "Not provided"}`,
+    `- Annual family income: ${details.income || "Not provided"}`,
+    `- Application type: ${details.applicationType || "Not provided"}`,
+    ""
+  ];
+
+  if (missing.length > 0) {
+    lines.push(`To narrow down your options, I still need ${missing.join(", ")}.`);
+  }
+
+  if (educationSchemes.length === 0) {
+    lines.push(
+      "YojanaSetu's current database does not contain a usable education scheme record matching this request.",
+      "Please check the National Scholarship Portal for current scholarship listings: https://scholarships.gov.in/"
+    );
+
+    return lines.join("\n");
+  }
+
+  lines.push("**Potential scholarship options in the database**");
+
+  educationSchemes.forEach(scheme => {
+    const evaluation = evaluateScheme(scheme, details);
+
+    lines.push("");
+    lines.push(`### ${scheme.name}`);
+    lines.push("**Status: Potential option — eligibility not confirmed.**");
+
+    if (scheme.benefit) {
+      lines.push(`**Benefit in database:** ${scheme.benefit}`);
+    }
+
+    if (evaluation.checks.length > 0) {
+      lines.push("**Checks for your profile:**");
+
+      evaluation.checks.forEach(check => {
+        lines.push(`- ${check.label}: ${check.status}`);
+      });
+    }
+
+    const eligibility = parseList(scheme.eligibility);
+
+    if (eligibility.length > 0) {
+      lines.push("**Eligibility information currently stored:**");
+      eligibility.forEach(item => lines.push(`- ${toText(item)}`));
+    } else {
+      lines.push("The database does not contain detailed eligibility criteria for this scheme.");
+    }
+
+    if (scheme.official_link) {
+      lines.push(`**Official website:** ${scheme.official_link}`);
+    }
+  });
+
+  lines.push(
+    "",
+    "**Important:** Your 90% in Class 12 and ₹2 lakh annual family income are useful details, but they do not by themselves establish eligibility. The current database does not provide enough precise criteria to confirm that you qualify for a specific scholarship. Verify the official rules, whether fresh applications are open, and any institution or merit requirements before applying.",
+    "",
+    "Official portal: https://scholarships.gov.in/"
+  );
 
   return lines.join("\n");
 }
@@ -406,26 +569,35 @@ function fallbackResponse(message, profile = {}, schemes = [], history = []) {
 
   const context = getConversationContext(history, message);
 
+  if (context.scholarship && isRecommendationRequest(message)) {
+    return buildRecommendationResponse(conversation, schemes);
+  }
+
   if (context.scholarship && isLikelyScholarshipFollowUp(message, history)) {
     return buildScholarshipFollowUp(conversation);
   }
 
+  const combinedUserMessages = conversation
+    .filter(item => item.role === "user")
+    .map(item => item.text)
+    .join(" ");
+
   const matches = findRelevantSchemes(
-    context.scholarship ? conversation.filter(item => item.role === "user").map(item => item.text).join(" ") : message,
+    context.scholarship ? combinedUserMessages : message,
     schemes,
     context.categories
   );
 
   if (!matches.length) {
     return context.scholarship
-      ? "I couldn't find another sufficiently relevant education scheme in the current database. Please check the official National Scholarship Portal for available options."
+      ? "I couldn't find a sufficiently relevant education scheme in YojanaSetu's current database. Please check the official National Scholarship Portal for current options: https://scholarships.gov.in/"
       : "I couldn't find a sufficiently relevant scheme in YojanaSetu's current database. Try specifying the type of support you need.";
   }
 
   const response = [
     "I checked the schemes currently available in YojanaSetu's database.",
     context.scholarship
-      ? "These education schemes may be relevant. Eligibility must be confirmed against the official guidelines."
+      ? "These education schemes may be relevant. Eligibility must be confirmed against official guidelines."
       : "These schemes may be relevant. Please check their eligibility conditions."
   ];
 
@@ -478,14 +650,21 @@ async function queryAssistant(
 
   const context = getConversationContext(safeHistory, message);
 
+  if (context.scholarship && isRecommendationRequest(message)) {
+    return buildRecommendationResponse(conversation, schemes);
+  }
+
   if (context.scholarship && isLikelyScholarshipFollowUp(message, safeHistory)) {
     return buildScholarshipFollowUp(conversation);
   }
 
+  const combinedUserMessages = conversation
+    .filter(item => item.role === "user")
+    .map(item => item.text)
+    .join(" ");
+
   const matches = findRelevantSchemes(
-    context.scholarship
-      ? conversation.filter(item => item.role === "user").map(item => item.text).join(" ")
-      : message,
+    context.scholarship ? combinedUserMessages : message,
     schemes,
     context.categories
   );
@@ -497,10 +676,10 @@ async function queryAssistant(
     return fallbackResponse(message, userProfile, schemes, safeHistory);
   }
 
-  const details = extractScholarshipDetails(conversation);
+  const scholarshipDetails = extractScholarshipDetails(conversation);
 
   const prompt = `
-You are YojanaSetu, an assistant helping Indian citizens understand government schemes.
+You are YojanaSetu, an assistant that helps Indian citizens understand government schemes.
 
 CONVERSATION HISTORY:
 ${safeHistory.map(item => `${item.role.toUpperCase()}: ${item.text}`).join("\n") || "No previous messages."}
@@ -508,30 +687,28 @@ ${safeHistory.map(item => `${item.role.toUpperCase()}: ${item.text}`).join("\n")
 LATEST MESSAGE:
 ${message}
 
-CITIZEN PROFILE:
+USER PROFILE:
 ${JSON.stringify(userProfile || {})}
 
 EXTRACTED SCHOLARSHIP DETAILS:
-${JSON.stringify(details, null, 2)}
+${JSON.stringify(scholarshipDetails, null, 2)}
 
-RELEVANT SCHEMES FROM THE DATABASE:
+RELEVANT SCHEME RECORDS FROM THE DATABASE:
 ${JSON.stringify(matches.map(getSchemeDetails), null, 2)}
 
 RULES:
 1. Answer the latest message using the full conversation history.
-2. Remember information the user has already provided.
-3. Never ask again for a detail that is already available.
-4. If the user provides a short follow-up, acknowledge it and ask only for genuinely missing details.
-5. Interpret phrases such as "In 12 I got 90%" as 90% in Class 12.
-6. Interpret "I am in 3rd year" as the third year of the course previously discussed.
-7. Interpret "family income is 2 lakh per year" as annual family income of ₹2 lakh.
-8. Interpret "fresh application" as a fresh application.
-9. During scholarship conversations, recommend only education-category schemes from the supplied records.
-10. Do not repeat the full scheme description in every follow-up.
-11. Never invent scheme names, benefits, eligibility criteria, documents, deadlines, or official URLs.
-12. Do not claim that the user is eligible until the official requirements have been checked.
-13. If no relevant database records exist, say so.
-14. Use simple, concise language.
+2. Remember every detail already provided by the user.
+3. Never ask for a detail again if it is already available.
+4. If the user asks which scholarships they can apply for, evaluate the supplied education scheme records against their profile.
+5. Distinguish between a potential match and confirmed eligibility.
+6. Do not invent scheme names, benefits, eligibility rules, income limits, documents, deadlines, or official links.
+7. If eligibility criteria are generic or missing, explicitly state that eligibility cannot be confirmed from the database.
+8. During scholarship conversations, do not recommend unrelated scheme categories.
+9. Do not repeat a complete scheme card after every short follow-up.
+10. Use simple and concise language.
+11. Never guarantee eligibility or approval.
+12. Do not claim a scheme is accepting fresh applications unless the supplied information confirms it.
 
 Answer the latest message in context.
 `;
